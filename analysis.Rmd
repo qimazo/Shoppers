@@ -1,4 +1,8 @@
 
+Online Shoppers Purchasing Intention Dataset, Kaggle:
+<https://www.kaggle.com/datasets/imakash3011/online-shoppers-purchasing-intention-dataset>
+
+
 title: "Why People Buy? A Statistic Analysis for Online Shopping Session"
 author: |
   Kimiya Mavaddat\
@@ -380,6 +384,81 @@ tidy(logit_model, exponentiate = TRUE, conf.int = TRUE) %>%
 
 - Every time `log1p(PageValues)` go up by 1 unit, the odds of purchase get
   multiply by the exponent coefficient shown above. This is by far the
+
+# Final Discussion
+
+## answering to the business questions
+
+1. **Engagement predict purchase very strong.** `PageValues` is
+   statistically significant, and also by far the biggest effect in the
+   whole joint model. Session that reach page connect with buying
+   intent, they are much more likely to convert.
+2. **New visitor buy with higher rate than returning visitor**, even
+   after we adjust for the other factor. I think returning visitor
+   browse more, without real need to buy right now.
+3. **Weekend session show higher purchase rate by them self** (H3), but
+   this effect **not survive** after adjust for other factor in the joint
+   model (Section 4.3). I think it is probably just a proxy for *when*
+   some high-converting visitor type or month happen to browse, not an
+   independent effect from weekend itself.
+4. If I take out the exit driven by `BounceRates`/`ExitRates`,
+   month/season also matter in descriptive way (Section 2.4). Month later
+   in the year show higher conversion, maybe because of holiday shopping
+   time.
+
+## data-driven recommendations
+
+- **Invest in whatever is driving `PageValues`**, for example product
+  recommendation on the site, search that work well, and page that
+  usually come right before checkout, because this is the biggest driver
+  of conversion, even after adjustment.
+- **Don't just assume returning visitor is closer to buying** compare
+  with new visitor; target the returning visitor who not convert yet with
+  re-engagement, like cart reminder or personalize offer, instead of
+  treating repeat traffic like it have higher intent by default.
+- **Watch `ExitRates` like an early warning sign.** Session with high
+  exit rate convert much less; if we reduce the page people tend to exit
+  from (for example, better load time or better navigation), it should
+  help conversion go up directly.
+- **Time the campaign around month that convert higher**, this we find in
+  Section 2.4. But don't put extra budget just for "weekend" as its own
+  target segment, because Section 4.3 show this effect go away once we
+  control other factor, so it is not an independent lever really.
+
+## Limitations
+
+- The data is at **session level, not customer level**. I cannot know if
+  same shopper come back in different session, so I cannot answer
+  question about loyalty or lifetime value here.
+- All the relationship I find here are **only association, not cause**,
+  for example weekend browsing correlate with purchase, but nothing here
+  prove that if we *move* traffic to weekend, sale will go up.
+- `Revenue` is just **yes/no** outcome, with no basket value information,
+  so this analysis cannot tell which segment is most valuable *in
+  revenue*, only which one more likely to convert.
+- The `VisitorType = Other` group is very small (85 out of 12,330 session
+  after cleaning), so its number is not very precise and should not be
+  over-interpret too much.
+
+## Future work
+
+- Connect session to customer ID, if this is available, to study
+  repeat-visit and lifetime-value pattern, instead of only single-session
+  conversion.
+- Run **A/B test** on the change we mention here (for example, redesign
+  the page people exit from a lot), to get real cause-effect, not only
+  association.
+- Add basket value or order size as second outcome in the model, so we
+  can put segment in order by expected revenue, not only by conversion
+  probability.
+
+## Data source
+
+Online Shoppers Purchasing Intention Dataset, Kaggle:
+<https://www.kaggle.com/datasets/imakash3011/online-shoppers-purchasing-intention-dataset>
+
+
+
   biggest effect in whole model, and it confirm H1 for me.
 - `VisitorType = New_Visitor` have higher odds for purchase, compare with
   the `Returning_Visitor` baseline, and this match with H2.
@@ -439,4 +518,75 @@ about (Section 2.3). The Youden cut point trade a little precision for
 much better recall on the purchase, and I think this is usually the more
 important error to avoid for business (if we miss a real buyer, it cost
 more than showing one extra ad to someone who not going to buy anyway).
+
+# Final Discussion
+
+## answering to the business questions
+
+1. **Engagement predict purchase very strong.** `PageValues` is
+   statistically significant, and also by far the biggest effect in the
+   whole joint model. Session that reach page connect with buying
+   intent, they are much more likely to convert.
+2. **New visitor buy with higher rate than returning visitor**, even
+   after we adjust for the other factor. I think returning visitor
+   browse more, without real need to buy right now.
+3. **Weekend session show higher purchase rate by them self** (H3), but
+   this effect **not survive** after adjust for other factor in the joint
+   model (Section 4.3). I think it is probably just a proxy for *when*
+   some high-converting visitor type or month happen to browse, not an
+   independent effect from weekend itself.
+4. If I take out the exit driven by `BounceRates`/`ExitRates`,
+   month/season also matter in descriptive way (Section 2.4). Month later
+   in the year show higher conversion, maybe because of holiday shopping
+   time.
+
+## data-driven recommendations
+
+- **Invest in whatever is driving `PageValues`**, for example product
+  recommendation on the site, search that work well, and page that
+  usually come right before checkout, because this is the biggest driver
+  of conversion, even after adjustment.
+- **Don't just assume returning visitor is closer to buying** compare
+  with new visitor; target the returning visitor who not convert yet with
+  re-engagement, like cart reminder or personalize offer, instead of
+  treating repeat traffic like it have higher intent by default.
+- **Watch `ExitRates` like an early warning sign.** Session with high
+  exit rate convert much less; if we reduce the page people tend to exit
+  from (for example, better load time or better navigation), it should
+  help conversion go up directly.
+- **Time the campaign around month that convert higher**, this we find in
+  Section 2.4. But don't put extra budget just for "weekend" as its own
+  target segment, because Section 4.3 show this effect go away once we
+  control other factor, so it is not an independent lever really.
+
+## Limitations
+
+- The data is at **session level, not customer level**. I cannot know if
+  same shopper come back in different session, so I cannot answer
+  question about loyalty or lifetime value here.
+- All the relationship I find here are **only association, not cause**,
+  for example weekend browsing correlate with purchase, but nothing here
+  prove that if we *move* traffic to weekend, sale will go up.
+- `Revenue` is just **yes/no** outcome, with no basket value information,
+  so this analysis cannot tell which segment is most valuable *in
+  revenue*, only which one more likely to convert.
+- The `VisitorType = Other` group is very small (85 out of 12,330 session
+  after cleaning), so its number is not very precise and should not be
+  over-interpret too much.
+
+## Future work
+
+- Connect session to customer ID, if this is available, to study
+  repeat-visit and lifetime-value pattern, instead of only single-session
+  conversion.
+- Run **A/B test** on the change we mention here (for example, redesign
+  the page people exit from a lot), to get real cause-effect, not only
+  association.
+- Add basket value or order size as second outcome in the model, so we
+  can put segment in order by expected revenue, not only by conversion
+  probability.
+
+
+
+
 
