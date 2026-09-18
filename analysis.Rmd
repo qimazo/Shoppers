@@ -1,0 +1,442 @@
+
+title: "Why People Buy? A Statistic Analysis for Online Shopping Session"
+author: |
+  Kimiya Mavaddat\
+  GH1043877
+output:
+  pdf_document:
+    toc: true
+    number_sections: true
+    fig_caption: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE, message = FALSE, warning = FALSE,
+  fig.align = "center", fig.width = 6, fig.height = 4
+)
+library(tidyverse)
+library(car)      # leveneTest, vif
+library(pROC)     # ROC, AUC
+library(broom)    # for clean model result
+library(scales)   # percent
+theme_set(theme_minimal(base_size = 11))
+```
+
+# Business Problem
+
+An online shop want to make bigger their **conversion rate** of the
+website, I mean, the number of session that people buy something at the
+end. The marketing team and product team need to know which behavior in a
+session and which type of visitor is connect with buying, so the money for
+personalize the website, re-targeting, and campaign in special season can
+go for the factor that really make change, and not just spread same
+amount everywhere in website.
+
+For this analysis I am using the **Online Shoppers Purchasing Intention
+Dataset** (Sakar et al., 2019), you can find it on Kaggle:
+<https://www.kaggle.com/datasets/imakash3011/online-shoppers-purchasing-intention-dataset>.
+It have 12,330 browsing session on a shopping website, in one year time,
+each one have information about page-visit number and duration, engagement
+number (`BounceRates`, `ExitRates`, `PageValues`), visitor and session
+information (`Month`, `VisitorType`, `Weekend`, `TrafficType`, ...), and a
+yes/no result `Revenue` that tell if the session end with purchase or not.
+
+## Business questions
+
+1. The session that convert, do they show **more engagement on the page**
+   (`PageValues`) compare with the session that not convert?
+2. Is buying connect to what type of visitor it is (new one, returning
+   one, or other)?
+3. If people browsing in the weekend, does it have relation with how much
+   they buy?
+4. Which factor, if we look them together and adjust for each other, can
+   explain best the chance of purchase, and how good we can predict this
+   chance?
+
+# Exploratory Data Analysis
+
+```{r load-data}
+df_raw <- read.csv("data/online_shoppers_intention.csv", stringsAsFactors = FALSE)
+dim(df_raw)
+str(df_raw)
+```
+
+```{r missingness}
+colSums(is.na(df_raw))
+```
+
+I check and there is no missing value in any column. So dataset is
+complete already, and I don't need to do imputation for this one.
+
+## Data cleaning
+
+```{r duplicates}
+n_dupe <- sum(duplicated(df_raw))
+n_dupe
+```
+
+`r n_dupe` rows are **exact same as another row**, in all of the 18
+columns, even in the number column like `BounceRates`/`ExitRates` that
+have many decimal number after the point. I think it is not really
+possible two different session have exact same number in every column
+until that many decimal, so I treat this like the row get logged two time
+or scraped two time by mistake, not like real independent session, and I
+remove them. If I don't remove, the variance will look smaller than it
+really is, and it will break the assumption of independent that the
+hypothesis test need later.
+
+```{r clean-data}
+# June is full word here, not "Jun", so no month.abb
+month_order <- c("Jan", "Feb", "Mar", "Apr", "May", "June",
+                  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+
+df <- df_raw %>%
+  distinct() %>%
+  mutate(
+    Month        = factor(Month, levels = month_order[month_order %in% unique(Month)]),
+    VisitorType  = factor(VisitorType),
+    Weekend      = factor(Weekend, levels = c(FALSE, TRUE), labels = c("Weekday", "Weekend")),
+    Revenue      = factor(Revenue, levels = c(FALSE, TRUE), labels = c("No purchase", "Purchase")),
+    OperatingSystems = factor(OperatingSystems),
+    Browser      = factor(Browser),
+    Region       = factor(Region),
+    TrafficType  = factor(TrafficType)
+  )
+
+dim(df)
+stopifnot(sum(is.na(df$Month)) == 0)  # no NA from month change
+```
+
+**Outliers.** The duration and rate columns (`ProductRelated_Duration`,
+`BounceRates`, `ExitRates`, `PageValues`) are very skew to the right side,
+with lot of value on zero (session with only one page, or session with no
+bounce/exit at all). I think this is just how people really shop, not a
+mistake when someone type the data, so I don't remove any row for this. I
+handle the skew instead with log transform, in the place it matter for the
+modeling part (Section 5).
+
+## Descriptive statistics
+
+```{r desc-numeric}
+numeric_vars <- c("Administrative", "Administrative_Duration", "Informational",
+                   "Informational_Duration", "ProductRelated", "ProductRelated_Duration",
+                   "BounceRates", "ExitRates", "PageValues", "SpecialDay")
+
+df %>%
+  select(all_of(numeric_vars)) %>%
+  summarise(across(everything(),
+                    list(mean = ~mean(.x), median = ~median(.x),
+                         sd = ~sd(.x), IQR = ~IQR(.x)))) %>%
+  pivot_longer(everything(), names_to = "stat", values_to = "value") %>%
+  separate(stat, into = c("variable", "statistic"), sep = "_(?=[^_]+$)") %>%
+  pivot_wider(names_from = statistic, values_from = value) %>%
+  mutate(across(where(is.numeric), ~round(.x, 3)))
+```
+
+```{r desc-categorical}
+table(df$Revenue) %>% prop.table() %>% round(3)
+table(df$VisitorType)
+table(df$Weekend)
+```
+
+Purchase is the **small group here**: only around 15% of session end with
+buying. I keep this imbalance in my mind for later, when I look at the
+proportion and also the model performance (Section 5.4).
+
+## Purchase rate by segment
+
+```{r eda-plots, fig.height=3.2}
+p1 <- df %>%
+  ggplot(aes(x = Revenue, y = PageValues)) +
+  geom_boxplot(outlier.alpha = 0.15, fill = "#4C78A8") +
+  coord_cartesian(ylim = c(0, 60)) +
+  labs(title = "PageValues, by if purchase happen or not", x = NULL, y = "PageValues")
+
+p2 <- df %>%
+  count(VisitorType, Revenue) %>%
+  group_by(VisitorType) %>%
+  mutate(rate = n / sum(n)) %>%
+  filter(Revenue == "Purchase") %>%
+  ggplot(aes(x = VisitorType, y = rate)) +
+  geom_col(fill = "#4C78A8") +
+  scale_y_continuous(labels = percent) +
+  labs(title = "Purchase rate for every visitor type", x = NULL, y = "Purchase rate")
+
+p1
+p2
+```
+
+```{r eda-plots-2, fig.height=3.2}
+p3 <- df %>%
+  count(Weekend, Revenue) %>%
+  group_by(Weekend) %>%
+  mutate(rate = n / sum(n)) %>%
+  filter(Revenue == "Purchase") %>%
+  ggplot(aes(x = Weekend, y = rate)) +
+  geom_col(fill = "#4C78A8") +
+  scale_y_continuous(labels = percent) +
+  labs(title = "Purchase rate, weekday against weekend", x = NULL, y = "Purchase rate")
+
+p4 <- df %>%
+  count(Month, Revenue) %>%
+  group_by(Month) %>%
+  mutate(rate = n / sum(n)) %>%
+  filter(Revenue == "Purchase") %>%
+  ggplot(aes(x = Month, y = rate)) +
+  geom_col(fill = "#4C78A8") +
+  scale_y_continuous(labels = percent) +
+  labs(title = "Purchase rate in every month", x = NULL, y = "Purchase rate")
+
+p3
+p4
+```
+
+```{r eda-correlation, fig.height=4.5}
+cor_mat <- df %>% select(all_of(numeric_vars)) %>% cor()
+cor_df <- as.data.frame(as.table(cor_mat))
+
+ggplot(cor_df, aes(Var1, Var2, fill = Freq)) +
+  geom_tile() +
+  scale_fill_gradient2(low = "#B00020", mid = "white", high = "#4C78A8",
+                        midpoint = 0, limits = c(-1, 1), name = "corr") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(title = "Correlation between number columns", x = NULL, y = NULL)
+```
+
+`BounceRates` and `ExitRates` have very strong correlation together (make
+sense, both of them talking about session where person leave fast). I come
+back to this when I choose predictor for the regression model in Section
+5, because I want to avoid the multicollinearity problem.
+
+# Hypotheses and Test Selection
+
+```{r stratified-split}
+set.seed(42)
+train_idx <- unlist(lapply(split(seq_len(nrow(df)), df$Revenue),
+                            function(idx) sample(idx, size = floor(0.8 * length(idx)))))
+train <- df[train_idx, ]
+test  <- df[-train_idx, ]
+
+c(train = nrow(train), test = nrow(test))
+prop.table(table(train$Revenue))
+prop.table(table(test$Revenue))
+```
+
+I make a **stratified 80/20 split** (with seed = 42, fix number so result
+is same every time) so the purchase rate stay same amount in both group.
+The hypothesis test number 1 to 3 below, I run on the whole clean dataset
+(no model fitting needed for them, so no need train/test split there); the
+`train` group is for fit the logistic regression in Section 5, and `test`
+group I only use for check how good it is.
+
+## H1: Engagement (`PageValues`) and Purchase
+
+$H_0$: distribution of `PageValues` is same for session that purchase and
+session that not purchase. $H_1$: it is not same.
+
+```{r h1-assumptions, fig.height=3}
+qqnorm(df$PageValues[df$Revenue == "Purchase"], main = "QQ plot, PageValues (Purchase)")
+qqline(df$PageValues[df$Revenue == "Purchase"])
+
+set.seed(42)
+shapiro.test(sample(df$PageValues, 5000))
+leveneTest(PageValues ~ Revenue, data = df)
+```
+
+The QQ plot show big jump away from the straight line, and Shapiro-Wilk
+test on 5,000-row sample (biggest sample size this test can take) say the
+data is not normal ($p < .001$). Levene's test also say the variance is
+not equal. Because both of the thing that parametric t-test need are
+broken, I use the **Mann-Whitney U test** instead (it use rank, and it
+don't need normal distribution) as my main test, and I still show Welch's
+t-test next to it, just to double check.
+
+```{r h1-test}
+wilcox.test(PageValues ~ Revenue, data = df)
+t.test(PageValues ~ Revenue, data = df)
+```
+
+**What I think this mean:** both test say reject $H_0$ at $\alpha = .05$
+($p < 2.2\times10^{-16}$). The session that end in purchase have higher
+`PageValues` number than the session that not purchase, and this is
+happen systematically, not by luck. This match with the fact that
+`PageValues` (a number that Google Analytics give to a page, based on how
+often that page come right before someone buy) is a strong signal for
+buying intent.
+
+## H2: Visitor Type and Purchase
+
+$H_0$: `Revenue` and `VisitorType` don't have relation. $H_1$: they have
+relation.
+
+```{r h2-test}
+tab_visitor <- table(df$VisitorType, df$Revenue)
+tab_visitor
+chi_visitor <- chisq.test(tab_visitor)
+chi_visitor
+chi_visitor$expected  # rule: all numbers > 5
+```
+
+Every expected number in the cell is bigger than 5, so the chi-square
+approximation should work fine here. The test say reject $H_0$
+($p < 2.2\times10^{-16}$), so purchase behavior have relation with visitor
+type. If I look at the descriptive number (Section 2.4), I can see
+**new visitor buy with higher rate than returning visitor**, and this look
+strange at first, but maybe it make sense because returning visitor is
+just browsing or checking thing again, without real need to buy right now.
+
+## H3: Weekend and Purchase
+
+$H_0$: `Revenue` and `Weekend` don't have relation. $H_1$: they have
+relation.
+
+```{r h3-test}
+tab_weekend <- table(df$Weekend, df$Revenue)
+tab_weekend
+chisq.test(tab_weekend)
+```
+
+The test say reject $H_0$ ($p \approx$ `r signif(chisq.test(tab_weekend)$p.value, 3)`):
+session in weekend buy with a little bit higher rate than session in
+weekday, but this effect is much more small if I compare with `PageValues`
+or `VisitorType` (I talk more about effect size in Section 6).
+
+# Logistic Regression: Joint Drivers of Purchase
+
+Hypothesis 1 to 3 only test one factor at one time. To see which factor
+still matter **after we adjust for the other one**, and also to get model
+that can give real *probability* number for purchase, not only tell if
+there is relation, I fit a multiple logistic regression on the `train`
+group.
+
+## Predictor selection
+
+`Region`, `Browser`, `OperatingSystems`, and `TrafficType` are just
+anonymous number code, with many level and no clear business meaning, so
+if I put them in the model it just add many coefficient with no useful
+story behind, and because of this I take them out. `BounceRates` I also
+take out and keep `ExitRates` only, because of the strong correlation I
+saw already in Section 2.5 (if I keep both, it will make variance bigger
+for no reason, without giving new information).
+
+`PageValues` and `ProductRelated_Duration` are skew to right side (Section
+2), so I use `log1p()` on both of them. I check below, in empirical way,
+by comparing the model with transform and without transform.
+
+```{r logit-transform-check}
+m_raw <- glm(Revenue ~ PageValues + ProductRelated_Duration, data = train, family = binomial)
+m_log <- glm(Revenue ~ log1p(PageValues) + log1p(ProductRelated_Duration), data = train, family = binomial)
+AIC(m_raw, m_log)
+```
+
+The log-transform version have lower AIC number, so this confirm the
+transform is making the fit better, and I use it in the full model.
+
+```{r logit-fit}
+month_mode <- names(sort(table(train$Month), decreasing = TRUE))[1]
+train$Month <- relevel(train$Month, ref = month_mode)
+test$Month  <- factor(test$Month, levels = levels(train$Month))
+
+logit_model <- glm(
+  Revenue ~ log1p(PageValues) + VisitorType + Weekend + Month +
+            log1p(ProductRelated_Duration) + ExitRates + SpecialDay,
+  data = train, family = binomial
+)
+summary(logit_model)
+```
+
+## Assumption checks
+
+```{r logit-vif}
+vif(logit_model)
+```
+
+All the GVIF$^{1/(2\cdot df)}$ number are well under the common line of 2,
+so multicollinearity is not really a problem for this group of predictor.
+
+```{r logit-linearity, fig.height=3.2}
+train %>%
+  mutate(logit = predict(logit_model, type = "link")) %>%
+  ggplot(aes(x = log1p(PageValues), y = logit)) +
+  geom_point(alpha = 0.05) +
+  geom_smooth(method = "loess", se = FALSE, color = "#B00020") +
+  labs(title = "Check for linearity: logit and log1p(PageValues)")
+```
+
+The loess line stay close to straight line for most of the range, so this
+support the linear-in-the-logit idea for this predictor (there is some
+curve at the very right side, where data point are not many, but this is
+expected and not big deal).
+
+## Coefficients as odds ratios
+
+```{r logit-odds}
+tidy(logit_model, exponentiate = TRUE, conf.int = TRUE) %>%
+  mutate(across(where(is.numeric), ~round(.x, 3)))
+```
+
+**What the main effect mean (odds ratio, 95% CI):**
+
+- Every time `log1p(PageValues)` go up by 1 unit, the odds of purchase get
+  multiply by the exponent coefficient shown above. This is by far the
+  biggest effect in whole model, and it confirm H1 for me.
+- `VisitorType = New_Visitor` have higher odds for purchase, compare with
+  the `Returning_Visitor` baseline, and this match with H2.
+- The `Weekend` effect, after adjust (OR `r round(tidy(logit_model, exponentiate = TRUE, conf.int = TRUE) %>% filter(term == "WeekendWeekend") %>% pull(estimate), 2)`,
+  95% CI `r round(tidy(logit_model, exponentiate = TRUE, conf.int = TRUE) %>% filter(term == "WeekendWeekend") %>% pull(conf.low), 2)`-`r round(tidy(logit_model, exponentiate = TRUE, conf.int = TRUE) %>% filter(term == "WeekendWeekend") %>% pull(conf.high), 2)`,
+  $p \approx$ `r round(tidy(logit_model, exponentiate = TRUE, conf.int = TRUE) %>% filter(term == "WeekendWeekend") %>% pull(p.value), 2)`)
+  is **not** statistically significant, and this is different from what
+  H3 bivariate chi-square test show us before. I think the raw relation
+  between weekend and purchase, it is actually explain by other factor
+  that already in the model, like which month or which visitor type is
+  more active in weekend, and not an independent effect from weekend by
+  itself. I think this is good example why adjusted model is important,
+  and not only doing one-factor-at-a-time test, for this business
+  question: it will be a mistake if we spend budget only for target
+  "weekend shopper" as one segment, just because of H3 alone.
+- `ExitRates` have strong negative effect: session where visitor tend to
+  leave from a page, they have much lower odds to convert.
+
+## the model performance and confidence :D
+
+```{r logit-performance}
+test$pred_prob <- predict(logit_model, newdata = test, type = "response")
+
+roc_obj <- roc(test$Revenue, test$pred_prob, levels = c("No purchase", "Purchase"))
+auc(roc_obj)
+
+best_thresh <- coords(roc_obj, "best", ret = "threshold", best.method = "youden")
+best_thresh
+
+pred_class_05  <- factor(ifelse(test$pred_prob > 0.5, "Purchase", "No purchase"),
+                          levels = levels(test$Revenue))
+pred_class_opt <- factor(ifelse(test$pred_prob > as.numeric(best_thresh), "Purchase", "No purchase"),
+                          levels = levels(test$Revenue))
+
+cat("Confusion matrix, at 0.5 cut point:\n")
+table(predicted = pred_class_05, actual = test$Revenue)
+
+cat("\nConfusion matrix, at the best Youden cut point:\n")
+table(predicted = pred_class_opt, actual = test$Revenue)
+
+mcfadden_r2 <- 1 - (logit_model$deviance / logit_model$null.deviance)
+mcfadden_r2
+```
+
+```{r roc-plot, fig.height=3.5}
+plot(roc_obj, main = paste0("ROC curve (AUC = ", round(auc(roc_obj), 3), ")"))
+```
+
+The model get an **AUC of `r round(auc(roc_obj), 3)`**, this mean if I pick
+one random purchase session and one random non-purchase session, the model
+rank the purchase one higher, that often. McFadden pseudo-$R^2$ is
+`r round(mcfadden_r2, 3)`, which is not a big number but also not small,
+and this is normal for this kind of behavior data because people behavior
+have a lot of randomness in it. At the 0.5 cut point, the small group
+(`Purchase`) get under-predict because of the class imbalance we talk
+about (Section 2.3). The Youden cut point trade a little precision for
+much better recall on the purchase, and I think this is usually the more
+important error to avoid for business (if we miss a real buyer, it cost
+more than showing one extra ad to someone who not going to buy anyway).
+
